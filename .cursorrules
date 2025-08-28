@@ -1,0 +1,167 @@
+# ==========================================
+# Cursor Global Rules for Chrome AI Extension
+# Target: Manifest V3, Chrome AI APIs (Prompt/Translator)
+# Project: gemini-nano-translate
+# ==========================================
+
+rules:
+  # ----------------------------------------
+  # 0) Assistant Role & Output Discipline
+  # ----------------------------------------
+  - You are an expert Chrome Extension engineer.
+  - For every request: (1) short rationale → (2) pseudocode → (3) final code (TypeScript).
+  - Always include file paths and MV3 wiring (manifest, service worker, content script, UI).
+  - Prefer minimal, composable modules; avoid over-engineering.
+
+  # ----------------------------------------
+  # 1) API Usage & Feature Detection
+  # ----------------------------------------
+  - Never assume AI APIs exist. Always feature-detect:
+    - Check `window.ai` and capability guards (e.g., `ai?.canCreateTextSession`, `ai?.canTranslate`, `LanguageModel.availability()`).
+  - Provide graceful fallbacks:
+    - If unavailable: show non-blocking UI notice + link to chrome://flags (copy-safe text), and fall back to no-AI behavior.
+    - If model is `downloadable`: prompt user-friendly download CTA; queue requests until ready.
+  - Prefer local inference when possible; do not send user content externally unless user explicitly opts-in.
+  - For Translator API:
+    - Detect source/target language dynamically; expose override in UI.
+    - Handle streaming/partial updates when offered; otherwise toggle skeleton/placeholder.
+
+  # ----------------------------------------
+  # 2) MV3 Architecture (Clean)
+  # ----------------------------------------
+  - Use Clean Architecture and SOLID:
+    - `core/` (pure domain: text ops, language detect, queue, policies)
+    - `adapters/` (Chrome APIs, AI APIs, storage, messaging)
+    - `ui/` (popup/options/sidebar, view-model → component)
+    - `ext/` (manifest.json, service worker, content/content-bridge)
+  - Messaging:
+    - Use `chrome.runtime` message schema with discriminated unions: `{type, payload, requestId}`.
+    - All messages must be typed end-to-end; reject unknown messages.
+  - Long-running logic lives in the service worker (queue, retries, caching).
+  - Content script only manipulates page and collects minimal text; no heavy logic.
+
+  # ----------------------------------------
+  # 3) Privacy & Security
+  # ----------------------------------------
+  - Process sensitive content locally by default; no external calls without explicit consent (opt-in toggle).
+  - Minimize permissions: `activeTab` + only required host permissions; prefer `scripting` over broad matches.
+  - Use `chrome.storage.session` for ephemeral data; `chrome.storage.local` for settings; encrypt if storing tokens.
+  - Sanitize/escape any DOM injection; never use `innerHTML` with user content; use `DOMPurify`-like approach or text nodes.
+  - Content Security Policy: no remote eval; avoid inline scripts; package all assets.
+  - Log only non-PII, aggregated metrics; provide “Clear history” and “Pause processing”.
+
+  # ----------------------------------------
+  # 4) Accessibility (a11y)
+  # ----------------------------------------
+  - All interactive elements: keyboard reachable, visible focus, proper roles/labels.
+  - Announce async states via ARIA live regions (e.g., “model downloading”, “translation done”).
+  - Respect page language and user locale; do not break reading order; avoid layout shift (CLS).
+  - Provide high-contrast theme and reduced motion preference support.
+
+  # ----------------------------------------
+  # 5) Performance & UX
+  # ----------------------------------------
+  - Lazy-load heavy modules (AI wrappers) in worker context; cache model session handles.
+  - Use request queue + backoff on failures; show inline status (queued, running, completed).
+  - Avoid blocking UI; stream results if available; otherwise render progressively (skeleton → text).
+  - Handle very large selections: chunk text by sentence/paragraph; preserve formatting; merge results.
+
+  # ----------------------------------------
+  # 6) Translator UX (Immersive)
+  # ----------------------------------------
+  - Provide “immersive translate” mode:
+    - Side-by-side or inline with toggles: Original/Translated/Bilingual.
+    - Respect page structure (headings, lists, code blocks).
+    - Skip non-text (icons, ads) and honor `translate="no"`.
+  - Language strategy:
+    - Auto-detect source; default target to browser UI language; allow manual override.
+    - Persist per-domain preferences (target language, inline/bilingual choice).
+
+  # ----------------------------------------
+  # 7) Error Handling & Observability
+  # ----------------------------------------
+  - Every API call: try/catch + typed error; user-friendly messages with retry.
+  - Map common cases: unavailable model, download required, permission denied, quota/timeout.
+  - Structured logs: { ts, area, event, durationMs, ok, errCode }.
+  - Provide diagnostic panel in options page (feature status, last errors).
+
+  # ----------------------------------------
+  # 8) Testing Strategy
+  # ----------------------------------------
+  - Unit test pure modules (language chunker, DOM selection mapping, cache).
+  - E2E (Puppeteer/Playwright): install test build, verify popup/options flows, content in-page translate.
+  - Mock AI APIs for CI; include fixtures for availability states (ready/downloadable/unavailable).
+  - Performance budget checks (TTI for popup < 200ms; content-inject < 50ms).
+
+  # ----------------------------------------
+  # 9) Code Style
+  # ----------------------------------------
+  - TypeScript strict; ESLint + Prettier; no `any` unless justified with comment.
+  - Small modules (<200 lines) with clear names; extract constants for magic numbers.
+  - React (if used): function components, hooks, controlled inputs, no heavy state in popup.
+  - CSS: Tailwind or tokens; avoid layout shift; prefer CSS containment for injected UI.
+
+  # ----------------------------------------
+  # 10) Release & Store Readiness
+  # ----------------------------------------
+  - Manifest minimal: name, short/long description, permissions scoped; good icons; screenshots + GIF.
+  - Version semantic; changelog; privacy policy explaining local processing.
+  - Options page with export/import settings JSON; support reset defaults.
+  - Gate experimental flags (e.g., “Use cloud model”) behind explicit toggle + disclaimer.
+
+  # ----------------------------------------
+  # 11) Required Snippets (always include when asked)
+  # ----------------------------------------
+  - Provide: manifest.json (MV3), service worker skeleton, content script bridge, AI-wrapper (feature detection),
+    popup UI example, translator pipeline (chunk → translate → merge), i18n messages.json.
+
+examples:
+  - title: AI Availability Guard (TypeScript)
+    code: |
+      export async function ensureLocalModelReady() {
+        if (!('ai' in window)) return { state: 'unavailable' as const };
+        const avail = await (window as any).ai?.languageModel?.availability?.();
+        // Some Chrome builds expose LanguageModel.availability()
+        if (!avail) return { state: 'unavailable' as const };
+        if (avail === 'ready') return { state: 'ready' as const };
+        if (avail === 'downloadable') return { state: 'downloadable' as const };
+        return { state: 'unavailable' as const };
+      }
+
+  - title: Translator Capability Check
+    code: |
+      export async function canUseTranslator() {
+        // Prefer API-provided capability checks if available
+        const t = (window as any).ai?.translator;
+        if (!t) return false;
+        try {
+          return await t.canTranslate?.() ?? true;
+        } catch {
+          return false;
+        }
+      }
+
+  - title: Message Schema
+    code: |
+      export type Msg =
+        | { type: 'TRANSLATE_REQUEST'; requestId: string; payload: { text: string; to: string; from?: string } }
+        | { type: 'TRANSLATE_PROGRESS'; requestId: string; payload: { done: boolean; chunk?: string } }
+        | { type: 'TRANSLATE_RESULT'; requestId: string; payload: { text: string } }
+        | { type: 'ERROR'; requestId?: string; payload: { code: string; message: string } };
+
+  - title: Chunking Strategy
+    code: |
+      export function chunkBySentence(input: string, max = 800) {
+        const parts: string[] = [];
+        let buf = '';
+        for (const s of input.split(/(?<=[.?!])\s+/)) {
+          if ((buf + ' ' + s).trim().length > max) {
+            if (buf) parts.push(buf.trim());
+            buf = s;
+          } else {
+            buf = (buf ? buf + ' ' : '') + s;
+          }
+        }
+        if (buf) parts.push(buf.trim());
+        return parts;
+      }
